@@ -1,293 +1,241 @@
 import { useState, useEffect, useCallback } from 'react'
 import './App.css'
 
-const API_BASE = 'https://tremendous-labrador-731.convex.site'
-const API_KEY = 'dsl-ui-client'
-const USER_ID = 'alex'
+const API = 'https://tremendous-labrador-731.convex.site/api'
 
-type TaskStatus = 'active' | 'done' | 'blocked' | 'parked'
+type Status = 'planned' | 'in_flight' | 'blocked' | 'done'
 
 interface Task {
-  id: string
-  stream: string
+  _id: string
   title: string
-  status: TaskStatus
-  blockedReason?: string | null
-  priority?: number | null
+  project: string
+  status: Status
+  blockedReason?: string
+  notes: { t: string; text: string }[]
   createdAt: string
   updatedAt: string
+  completedAt?: string
 }
 
-interface PlannerView {
-  streams: Record<string, Task[]>
+interface ListResponse {
+  tasks: Record<string, Task[]>
   stats: {
-    totalActive: number
-    totalDoneToday: number
-    blockedCount: number
+    total: number
+    planned: number
+    in_flight: number
+    blocked: number
+    done: number
   }
-}
-
-interface CommandResult {
-  op: string
-  ok: boolean
-  task_id?: string
-  error?: string
 }
 
 function App() {
-  const [view, setView] = useState<PlannerView | null>(null)
+  const [data, setData] = useState<ListResponse | null>(null)
   const [loading, setLoading] = useState(true)
-  const [error, setError] = useState<string | null>(null)
-  const [newTaskStream, setNewTaskStream] = useState('')
-  const [newTaskTitle, setNewTaskTitle] = useState('')
+  const [newProject, setNewProject] = useState('')
+  const [newTitle, setNewTitle] = useState('')
+  const [showAdd, setShowAdd] = useState(false)
   const [blockReason, setBlockReason] = useState<Record<string, string>>({})
-  const [showAddForm, setShowAddForm] = useState(false)
 
-  const fetchState = useCallback(async () => {
-    try {
-      const response = await fetch(`${API_BASE}/dsl/state?user_id=${USER_ID}`)
-      const data = await response.json()
-      setView(data.view)
-      setError(null)
-    } catch (err) {
-      setError('Failed to fetch planner state')
-    } finally {
-      setLoading(false)
-    }
+  const refresh = useCallback(async () => {
+    const res = await fetch(API)
+    setData(await res.json())
+    setLoading(false)
   }, [])
 
-  useEffect(() => {
-    fetchState()
-  }, [fetchState])
+  useEffect(() => { refresh() }, [refresh])
 
-  const sendCommand = async (commands: object[]): Promise<CommandResult[]> => {
-    try {
-      const response = await fetch(`${API_BASE}/dsl/command`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'X-DSL-API-Key': API_KEY,
-        },
-        body: JSON.stringify({
-          version: 'v1',
-          user_id: USER_ID,
-          commands,
-        }),
-      })
-      const data = await response.json()
-      if (data.view) {
-        setView(data.view)
-      }
-      return data.results || []
-    } catch (err) {
-      setError('Failed to send command')
-      return []
-    }
+  const post = async (body: object) => {
+    await fetch(API, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    })
+    refresh()
   }
 
-  const handleAddTask = async (e: React.FormEvent) => {
+  const addTask = async (e: React.FormEvent) => {
     e.preventDefault()
-    if (!newTaskStream.trim() || !newTaskTitle.trim()) return
-
-    await sendCommand([
-      { op: 'add', stream: newTaskStream.trim(), title: newTaskTitle.trim() },
-    ])
-    setNewTaskStream('')
-    setNewTaskTitle('')
-    setShowAddForm(false)
+    if (!newProject.trim() || !newTitle.trim()) return
+    await post({ op: 'add', project: newProject.trim(), title: newTitle.trim() })
+    setNewProject('')
+    setNewTitle('')
+    setShowAdd(false)
   }
 
-  const handleStatusChange = async (taskId: string, newStatus: TaskStatus, reason?: string) => {
-    const command: Record<string, string> = { op: newStatus, task_id: taskId }
-    if (newStatus === 'blocked' && reason) {
-      command.reason = reason
-    }
-    await sendCommand([command])
-    setBlockReason((prev) => ({ ...prev, [taskId]: '' }))
+  const setStatus = async (id: string, status: Status, reason?: string) => {
+    await post({ op: 'status', id, status, reason })
+    setBlockReason(prev => ({ ...prev, [id]: '' }))
   }
 
-  const handleSweep = async () => {
-    await sendCommand([{ op: 'sweep' }])
+  const deleteTask = async (id: string) => {
+    await post({ op: 'delete', id })
   }
 
-  const getStatusColor = (status: TaskStatus): string => {
-    switch (status) {
-      case 'active': return '#22c55e'
-      case 'done': return '#6b7280'
-      case 'blocked': return '#ef4444'
-      case 'parked': return '#f59e0b'
-      default: return '#6b7280'
-    }
+  const statusDot: Record<Status, string> = {
+    in_flight: 'bg-blue-400',
+    blocked: 'bg-rose-500',
+    planned: 'bg-neutral-500',
+    done: 'bg-emerald-500',
   }
 
-  const getStatusEmoji = (status: TaskStatus): string => {
-    switch (status) {
-      case 'active': return '▶'
-      case 'done': return '✓'
-      case 'blocked': return '⛔'
-      case 'parked': return '⏸'
-      default: return '•'
-    }
+  const statusLabel: Record<Status, string> = {
+    in_flight: 'In Flight',
+    blocked: 'Blocked',
+    planned: 'Planned',
+    done: 'Done',
   }
 
-  if (loading) {
-    return (
-      <div className="container">
-        <h1 style={{ color: 'white' }}>Daily Shit List</h1>
-        <p style={{ color: 'white' }}>Loading...</p>
-      </div>
-    )
-  }
+  if (loading) return <div className="p-8 text-neutral-400">Loading...</div>
 
-  if (error) {
-    return (
-      <div className="container">
-        <h1 style={{ color: 'white' }}>Daily Shit List</h1>
-        <div className="error">{error}</div>
-        <button onClick={fetchState}>Retry</button>
-      </div>
-    )
-  }
-
-  const allStreams = view ? Object.keys(view.streams).sort() : []
+  const projects = data ? Object.keys(data.tasks).sort() : []
+  const allProjects = [...new Set([...projects])]
 
   return (
-    <div className="container">
-      <header className="header">
-        <h1>Daily Shit List</h1>
-        <div className="stats">
-          <span className="stat active">{view?.stats.totalActive || 0} active</span>
-          <span className="stat done">{view?.stats.totalDoneToday || 0} done today</span>
-          <span className="stat blocked">{view?.stats.blockedCount || 0} blocked</span>
+    <div className="min-h-screen bg-neutral-950 text-neutral-100 p-4">
+      <header className="mb-6">
+        <div className="flex items-center justify-between mb-4">
+          <h1 className="text-xl font-semibold">Daily Sh*t List</h1>
+          <div className="flex gap-2">
+            <button onClick={() => setShowAdd(!showAdd)} className="px-3 py-1 bg-blue-600 rounded text-sm">
+              + Add
+            </button>
+            <button onClick={() => post({ op: 'purge' })} className="px-3 py-1 bg-neutral-700 rounded text-sm">
+              Purge Done
+            </button>
+          </div>
         </div>
-        <div className="header-actions">
-          <button className="btn-add" onClick={() => setShowAddForm(!showAddForm)}>
-            + Add Task
-          </button>
-          <button className="btn-sweep" onClick={handleSweep}>
-            🧹 Sweep
-          </button>
-          <button className="btn-refresh" onClick={fetchState}>
-            ↻ Refresh
-          </button>
-        </div>
+
+        {data && (
+          <div className="flex gap-3 text-sm">
+            <span className="text-blue-400">{data.stats.in_flight} in flight</span>
+            <span className="text-rose-400">{data.stats.blocked} blocked</span>
+            <span className="text-neutral-400">{data.stats.planned} planned</span>
+            <span className="text-emerald-400">{data.stats.done} done</span>
+          </div>
+        )}
       </header>
 
-      {showAddForm && (
-        <form className="add-form" onSubmit={handleAddTask}>
+      {showAdd && (
+        <form onSubmit={addTask} className="mb-6 p-3 bg-neutral-900 rounded-lg flex gap-2 flex-wrap">
           <input
             type="text"
-            placeholder="Stream (e.g., crankshaft, personal)"
-            value={newTaskStream}
-            onChange={(e) => setNewTaskStream(e.target.value)}
-            list="streams"
+            placeholder="Project"
+            value={newProject}
+            onChange={e => setNewProject(e.target.value)}
+            list="projects"
+            className="flex-1 min-w-[120px] px-3 py-2 bg-neutral-800 rounded border border-neutral-700 text-sm"
           />
-          <datalist id="streams">
-            {allStreams.map((s) => (
-              <option key={s} value={s} />
-            ))}
+          <datalist id="projects">
+            {allProjects.map(p => <option key={p} value={p} />)}
           </datalist>
           <input
             type="text"
             placeholder="Task title"
-            value={newTaskTitle}
-            onChange={(e) => setNewTaskTitle(e.target.value)}
+            value={newTitle}
+            onChange={e => setNewTitle(e.target.value)}
+            className="flex-[2] min-w-[200px] px-3 py-2 bg-neutral-800 rounded border border-neutral-700 text-sm"
           />
-          <button type="submit">Add</button>
-          <button type="button" onClick={() => setShowAddForm(false)}>Cancel</button>
+          <button type="submit" className="px-4 py-2 bg-emerald-600 rounded text-sm">Add</button>
         </form>
       )}
 
-      <main className="streams">
-        {allStreams.map((streamName) => {
-          const tasks = view?.streams[streamName] || []
+      <div className="space-y-6">
+        {projects.map(project => {
+          const tasks = data?.tasks[project] || []
+          const active = tasks.filter(t => t.status !== 'done')
+          const done = tasks.filter(t => t.status === 'done')
+
           return (
-            <section key={streamName} className="stream">
-              <h2 className="stream-name">{streamName}</h2>
-              <ul className="task-list">
-                {tasks.map((task) => (
-                  <li key={task.id} className={`task task-${task.status}`}>
-                    <div className="task-header">
-                      <span
-                        className="task-status"
-                        style={{ color: getStatusColor(task.status) }}
-                      >
-                        {getStatusEmoji(task.status)}
-                      </span>
-                      <span className="task-title">{task.title}</span>
-                      {task.priority !== null && task.priority !== undefined && (
-                        <span className="task-priority">P{task.priority}</span>
-                      )}
-                    </div>
-                    {task.blockedReason && (
-                      <div className="task-blocked-reason">
-                        ⚠ {task.blockedReason}
-                      </div>
-                    )}
-                    <div className="task-actions">
-                      {task.status !== 'active' && (
-                        <button
-                          className="btn-action btn-active"
-                          onClick={() => handleStatusChange(task.id, 'active')}
-                        >
-                          ▶ Active
-                        </button>
-                      )}
-                      {task.status !== 'done' && (
-                        <button
-                          className="btn-action btn-done"
-                          onClick={() => handleStatusChange(task.id, 'done')}
-                        >
-                          ✓ Done
-                        </button>
-                      )}
-                      {task.status !== 'blocked' && (
-                        <div className="block-action">
-                          <input
-                            type="text"
-                            placeholder="Reason..."
-                            value={blockReason[task.id] || ''}
-                            onChange={(e) =>
-                              setBlockReason((prev) => ({
-                                ...prev,
-                                [task.id]: e.target.value,
-                              }))
-                            }
-                          />
-                          <button
-                            className="btn-action btn-blocked"
-                            onClick={() =>
-                              handleStatusChange(task.id, 'blocked', blockReason[task.id])
-                            }
-                          >
-                            ⛔ Block
+            <section key={project} className="bg-neutral-900/50 rounded-xl p-4 border border-neutral-800">
+              <h2 className="text-sm uppercase tracking-wider text-neutral-400 mb-3">{project}</h2>
+
+              <ul className="space-y-2">
+                {active.map(task => (
+                  <li key={task._id} className="bg-neutral-900 rounded-lg p-3">
+                    <div className="flex items-start gap-3">
+                      <span className={`mt-1.5 h-2 w-2 rounded-full ${statusDot[task.status]}`} />
+                      <div className="flex-1 min-w-0">
+                        <div className="font-medium text-sm">{task.title}</div>
+                        {task.blockedReason && (
+                          <div className="text-xs text-rose-400 mt-1">⚠ {task.blockedReason}</div>
+                        )}
+                        {task.notes.length > 0 && (
+                          <div className="text-xs text-neutral-500 mt-1 truncate">
+                            note: {task.notes[task.notes.length - 1].text}
+                          </div>
+                        )}
+
+                        <div className="flex gap-2 mt-2 flex-wrap">
+                          {task.status !== 'in_flight' && (
+                            <button onClick={() => setStatus(task._id, 'in_flight')}
+                              className="px-2 py-1 text-xs bg-blue-600/20 text-blue-400 rounded">
+                              Start
+                            </button>
+                          )}
+                          {task.status !== 'done' && (
+                            <button onClick={() => setStatus(task._id, 'done')}
+                              className="px-2 py-1 text-xs bg-emerald-600/20 text-emerald-400 rounded">
+                              Done
+                            </button>
+                          )}
+                          {task.status !== 'blocked' && (
+                            <div className="flex gap-1">
+                              <input
+                                type="text"
+                                placeholder="reason"
+                                value={blockReason[task._id] || ''}
+                                onChange={e => setBlockReason(prev => ({ ...prev, [task._id]: e.target.value }))}
+                                className="w-24 px-2 py-1 text-xs bg-neutral-800 rounded border border-neutral-700"
+                              />
+                              <button onClick={() => setStatus(task._id, 'blocked', blockReason[task._id])}
+                                className="px-2 py-1 text-xs bg-rose-600/20 text-rose-400 rounded">
+                                Block
+                              </button>
+                            </div>
+                          )}
+                          {task.status === 'blocked' && (
+                            <button onClick={() => setStatus(task._id, 'planned')}
+                              className="px-2 py-1 text-xs bg-neutral-600/20 text-neutral-400 rounded">
+                              Unblock
+                            </button>
+                          )}
+                          <button onClick={() => deleteTask(task._id)}
+                            className="px-2 py-1 text-xs bg-neutral-700/50 text-neutral-500 rounded">
+                            Delete
                           </button>
                         </div>
-                      )}
-                      {task.status !== 'parked' && (
-                        <button
-                          className="btn-action btn-parked"
-                          onClick={() => handleStatusChange(task.id, 'parked')}
-                        >
-                          ⏸ Park
-                        </button>
-                      )}
+                      </div>
                     </div>
                   </li>
                 ))}
-                {tasks.length === 0 && (
-                  <li className="task-empty">No tasks in this stream</li>
+
+                {done.length > 0 && (
+                  <li className="mt-3 pt-3 border-t border-neutral-800">
+                    <div className="text-xs text-neutral-500 mb-2">Completed ({done.length})</div>
+                    {done.map(task => (
+                      <div key={task._id} className="flex items-center gap-2 text-sm text-neutral-500 py-1">
+                        <span className="h-2 w-2 rounded-full bg-emerald-500" />
+                        <span className="line-through flex-1">{task.title}</span>
+                        <button onClick={() => deleteTask(task._id)} className="text-xs text-neutral-600 hover:text-neutral-400">×</button>
+                      </div>
+                    ))}
+                  </li>
                 )}
               </ul>
+
+              {tasks.length === 0 && (
+                <div className="text-neutral-600 text-sm">No tasks</div>
+              )}
             </section>
           )
         })}
-        {allStreams.length === 0 && (
-          <div className="empty-state">
-            <p>No tasks yet. Add your first task!</p>
+
+        {projects.length === 0 && (
+          <div className="text-center text-neutral-600 py-12">
+            No tasks yet. Add your first task!
           </div>
         )}
-      </main>
+      </div>
     </div>
   )
 }

@@ -1,423 +1,200 @@
-import { mutation, query, internalMutation } from "./_generated/server";
+import { mutation, query } from "./_generated/server";
 import { v } from "convex/values";
-import { Id } from "./_generated/dataModel";
 
-// Helper to get current ISO timestamp
 function now(): string {
   return new Date().toISOString();
 }
 
-// Helper to normalize stream names (case-insensitive)
-function normalizeStream(stream: string): string {
-  return stream.toLowerCase().trim();
-}
-
 // ============ MUTATIONS ============
 
-export const addTask = mutation({
+export const add = mutation({
   args: {
-    userId: v.string(),
-    stream: v.string(),
     title: v.string(),
-    priority: v.optional(v.number()),
-    source: v.string(),
+    project: v.string(),
+    note: v.optional(v.string()),
   },
   handler: async (ctx, args) => {
     const timestamp = now();
+    const notes = args.note
+      ? [{ t: timestamp, text: args.note }]
+      : [];
+
     const taskId = await ctx.db.insert("tasks", {
-      userId: args.userId,
-      stream: normalizeStream(args.stream),
       title: args.title,
-      status: "active",
-      blockedReason: null,
-      priority: args.priority ?? null,
+      project: args.project,
+      status: "planned",
+      notes,
       createdAt: timestamp,
       updatedAt: timestamp,
-      completedAt: null,
     });
-
-    // Log event
-    await ctx.db.insert("events", {
-      userId: args.userId,
-      type: "task.add",
-      taskId,
-      payload: { title: args.title, stream: args.stream, priority: args.priority },
-      createdAt: timestamp,
-      source: args.source,
-    });
-
     return taskId;
   },
 });
 
-export const markDone = mutation({
-  args: {
-    taskId: v.id("tasks"),
-    userId: v.string(),
-    source: v.string(),
-  },
+export const done = mutation({
+  args: { taskId: v.id("tasks") },
   handler: async (ctx, args) => {
     const task = await ctx.db.get(args.taskId);
-    if (!task || task.userId !== args.userId) {
-      return { ok: false, error: "Task not found" };
-    }
+    if (!task) return { ok: false, error: "Task not found" };
 
     const timestamp = now();
-    const previousStatus = task.status;
-
     await ctx.db.patch(args.taskId, {
       status: "done",
+      completedAt: timestamp,
       updatedAt: timestamp,
-      completedAt: task.completedAt ?? timestamp,
-      blockedReason: null,
+      blockedReason: undefined,
     });
-
-    await ctx.db.insert("events", {
-      userId: args.userId,
-      type: "task.statusChange",
-      taskId: args.taskId,
-      payload: { from: previousStatus, to: "done" },
-      createdAt: timestamp,
-      source: args.source,
-    });
-
     return { ok: true };
   },
 });
 
-export const markBlocked = mutation({
+export const status = mutation({
   args: {
     taskId: v.id("tasks"),
-    userId: v.string(),
-    reason: v.string(),
-    source: v.string(),
+    status: v.union(
+      v.literal("planned"),
+      v.literal("in_flight"),
+      v.literal("blocked"),
+      v.literal("done")
+    ),
+    reason: v.optional(v.string()),
   },
   handler: async (ctx, args) => {
     const task = await ctx.db.get(args.taskId);
-    if (!task || task.userId !== args.userId) {
-      return { ok: false, error: "Task not found" };
-    }
+    if (!task) return { ok: false, error: "Task not found" };
 
     const timestamp = now();
-    const previousStatus = task.status;
-
-    await ctx.db.patch(args.taskId, {
-      status: "blocked",
-      blockedReason: args.reason,
+    const update: any = {
+      status: args.status,
       updatedAt: timestamp,
-    });
+    };
 
-    await ctx.db.insert("events", {
-      userId: args.userId,
-      type: "task.statusChange",
-      taskId: args.taskId,
-      payload: { from: previousStatus, to: "blocked", reason: args.reason },
-      createdAt: timestamp,
-      source: args.source,
-    });
+    if (args.status === "blocked" && args.reason) {
+      update.blockedReason = args.reason;
+    } else if (args.status !== "blocked") {
+      update.blockedReason = undefined;
+    }
 
+    if (args.status === "done") {
+      update.completedAt = timestamp;
+    } else {
+      update.completedAt = undefined;
+    }
+
+    await ctx.db.patch(args.taskId, update);
     return { ok: true };
   },
 });
 
-export const markParked = mutation({
+export const note = mutation({
   args: {
     taskId: v.id("tasks"),
-    userId: v.string(),
-    source: v.string(),
-  },
-  handler: async (ctx, args) => {
-    const task = await ctx.db.get(args.taskId);
-    if (!task || task.userId !== args.userId) {
-      return { ok: false, error: "Task not found" };
-    }
-
-    const timestamp = now();
-    const previousStatus = task.status;
-
-    await ctx.db.patch(args.taskId, {
-      status: "parked",
-      blockedReason: null,
-      updatedAt: timestamp,
-    });
-
-    await ctx.db.insert("events", {
-      userId: args.userId,
-      type: "task.statusChange",
-      taskId: args.taskId,
-      payload: { from: previousStatus, to: "parked" },
-      createdAt: timestamp,
-      source: args.source,
-    });
-
-    return { ok: true };
-  },
-});
-
-export const markActive = mutation({
-  args: {
-    taskId: v.id("tasks"),
-    userId: v.string(),
-    source: v.string(),
-  },
-  handler: async (ctx, args) => {
-    const task = await ctx.db.get(args.taskId);
-    if (!task || task.userId !== args.userId) {
-      return { ok: false, error: "Task not found" };
-    }
-
-    const timestamp = now();
-    const previousStatus = task.status;
-
-    await ctx.db.patch(args.taskId, {
-      status: "active",
-      blockedReason: null,
-      updatedAt: timestamp,
-      completedAt: null,
-    });
-
-    await ctx.db.insert("events", {
-      userId: args.userId,
-      type: "task.statusChange",
-      taskId: args.taskId,
-      payload: { from: previousStatus, to: "active" },
-      createdAt: timestamp,
-      source: args.source,
-    });
-
-    return { ok: true };
-  },
-});
-
-export const addNote = mutation({
-  args: {
-    taskId: v.id("tasks"),
-    userId: v.string(),
     text: v.string(),
-    author: v.string(),
-    source: v.string(),
   },
   handler: async (ctx, args) => {
     const task = await ctx.db.get(args.taskId);
-    if (!task || task.userId !== args.userId) {
-      return { ok: false, error: "Task not found" };
-    }
+    if (!task) return { ok: false, error: "Task not found" };
 
     const timestamp = now();
+    const notes = [...task.notes, { t: timestamp, text: args.text }];
 
-    const noteId = await ctx.db.insert("notes", {
-      taskId: args.taskId,
-      userId: args.userId,
-      author: args.author,
-      text: args.text,
-      createdAt: timestamp,
-    });
-
-    // Update task's updatedAt
     await ctx.db.patch(args.taskId, {
+      notes,
       updatedAt: timestamp,
     });
-
-    await ctx.db.insert("events", {
-      userId: args.userId,
-      type: "task.note",
-      taskId: args.taskId,
-      payload: { text: args.text, author: args.author, noteId },
-      createdAt: timestamp,
-      source: args.source,
-    });
-
-    return { ok: true, noteId };
+    return { ok: true };
   },
 });
 
-export const renameTask = mutation({
+export const rename = mutation({
   args: {
     taskId: v.id("tasks"),
-    userId: v.string(),
     title: v.string(),
-    source: v.string(),
   },
   handler: async (ctx, args) => {
     const task = await ctx.db.get(args.taskId);
-    if (!task || task.userId !== args.userId) {
-      return { ok: false, error: "Task not found" };
-    }
-
-    const timestamp = now();
-    const previousTitle = task.title;
+    if (!task) return { ok: false, error: "Task not found" };
 
     await ctx.db.patch(args.taskId, {
       title: args.title,
-      updatedAt: timestamp,
+      updatedAt: now(),
     });
-
-    await ctx.db.insert("events", {
-      userId: args.userId,
-      type: "task.updateTitle",
-      taskId: args.taskId,
-      payload: { from: previousTitle, to: args.title },
-      createdAt: timestamp,
-      source: args.source,
-    });
-
     return { ok: true };
   },
 });
 
-export const sweep = mutation({
-  args: {
-    userId: v.string(),
-    source: v.string(),
-  },
+export const deleteTask = mutation({
+  args: { taskId: v.id("tasks") },
   handler: async (ctx, args) => {
-    const timestamp = now();
-    const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
-    const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
+    const task = await ctx.db.get(args.taskId);
+    if (!task) return { ok: false, error: "Task not found" };
 
-    // Get all tasks for the user
-    const tasks = await ctx.db
+    await ctx.db.delete(args.taskId);
+    return { ok: true };
+  },
+});
+
+export const purge = mutation({
+  args: {},
+  handler: async (ctx) => {
+    const doneTasks = await ctx.db
       .query("tasks")
-      .withIndex("by_userId_status", (q) => q.eq("userId", args.userId))
+      .withIndex("by_status", (q) => q.eq("status", "done"))
       .collect();
 
-    let archivedCount = 0;
-    let parkedCount = 0;
-
-    for (const task of tasks) {
-      // Auto-park active tasks not touched in 30 days
-      if (task.status === "active" && task.updatedAt < thirtyDaysAgo) {
-        await ctx.db.patch(task._id, {
-          status: "parked",
-          updatedAt: timestamp,
-        });
-        parkedCount++;
-      }
+    let count = 0;
+    for (const task of doneTasks) {
+      await ctx.db.delete(task._id);
+      count++;
     }
 
-    await ctx.db.insert("events", {
-      userId: args.userId,
-      type: "planner.sweep",
-      taskId: null,
-      payload: { archivedCount, parkedCount },
-      createdAt: timestamp,
-      source: args.source,
-    });
-
-    return { ok: true, archivedCount, parkedCount };
+    return { ok: true, deleted: count };
   },
 });
 
 // ============ QUERIES ============
 
-export const getState = query({
-  args: {
-    userId: v.string(),
-  },
-  handler: async (ctx, args) => {
-    // Get all tasks for user (excluding done tasks older than today for the "view")
-    const tasks = await ctx.db
-      .query("tasks")
-      .withIndex("by_userId_createdAt", (q) => q.eq("userId", args.userId))
-      .collect();
+export const list = query({
+  args: {},
+  handler: async (ctx) => {
+    const tasks = await ctx.db.query("tasks").collect();
 
-    // Group by stream
-    const streams: Record<string, Array<{
-      id: string;
-      stream: string;
-      title: string;
-      status: "active" | "done" | "blocked" | "parked";
-      blockedReason?: string | null;
-      priority?: number | null;
-      createdAt: string;
-      updatedAt: string;
-    }>> = {};
-
-    const todayStart = new Date();
-    todayStart.setHours(0, 0, 0, 0);
-    const todayIso = todayStart.toISOString();
-
-    let totalActive = 0;
-    let totalDoneToday = 0;
-    let blockedCount = 0;
+    // Group by project
+    const byProject: Record<string, typeof tasks> = {};
 
     for (const task of tasks) {
-      // Skip done tasks that were completed before today (for the view)
-      if (task.status === "done" && task.completedAt && task.completedAt < todayIso) {
-        continue;
+      if (!byProject[task.project]) {
+        byProject[task.project] = [];
       }
-
-      if (!streams[task.stream]) {
-        streams[task.stream] = [];
-      }
-
-      streams[task.stream].push({
-        id: task._id,
-        stream: task.stream,
-        title: task.title,
-        status: task.status,
-        blockedReason: task.blockedReason,
-        priority: task.priority,
-        createdAt: task.createdAt,
-        updatedAt: task.updatedAt,
-      });
-
-      if (task.status === "active") totalActive++;
-      if (task.status === "done" && task.completedAt && task.completedAt >= todayIso) totalDoneToday++;
-      if (task.status === "blocked") blockedCount++;
+      byProject[task.project].push(task);
     }
 
-    // Sort tasks within each stream by priority (lower first), then by createdAt
-    for (const stream of Object.keys(streams)) {
-      streams[stream].sort((a, b) => {
-        const priorityA = a.priority ?? Infinity;
-        const priorityB = b.priority ?? Infinity;
-        if (priorityA !== priorityB) return priorityA - priorityB;
+    // Sort: in_flight first, then blocked, then planned, done last
+    const statusOrder: Record<string, number> = { in_flight: 0, blocked: 1, planned: 2, done: 3 };
+    for (const project of Object.keys(byProject)) {
+      byProject[project].sort((a, b) => {
+        const orderA = statusOrder[a.status] ?? 99;
+        const orderB = statusOrder[b.status] ?? 99;
+        if (orderA !== orderB) return orderA - orderB;
         return a.createdAt.localeCompare(b.createdAt);
       });
     }
 
-    return {
-      streams,
-      stats: {
-        totalActive,
-        totalDoneToday,
-        blockedCount,
-      },
+    const stats = {
+      total: tasks.length,
+      planned: tasks.filter(t => t.status === "planned").length,
+      in_flight: tasks.filter(t => t.status === "in_flight").length,
+      blocked: tasks.filter(t => t.status === "blocked").length,
+      done: tasks.filter(t => t.status === "done").length,
     };
+
+    return { tasks: byProject, stats };
   },
 });
 
-export const getTaskById = query({
-  args: {
-    taskId: v.id("tasks"),
-    userId: v.string(),
-  },
+export const get = query({
+  args: { taskId: v.id("tasks") },
   handler: async (ctx, args) => {
-    const task = await ctx.db.get(args.taskId);
-    if (!task || task.userId !== args.userId) {
-      return null;
-    }
-    return task;
-  },
-});
-
-export const getNotesForTask = query({
-  args: {
-    taskId: v.id("tasks"),
-    userId: v.string(),
-  },
-  handler: async (ctx, args) => {
-    const task = await ctx.db.get(args.taskId);
-    if (!task || task.userId !== args.userId) {
-      return [];
-    }
-
-    const notes = await ctx.db
-      .query("notes")
-      .withIndex("by_taskId", (q) => q.eq("taskId", args.taskId))
-      .collect();
-
-    return notes;
+    return await ctx.db.get(args.taskId);
   },
 });
