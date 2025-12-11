@@ -233,3 +233,29 @@ export const active = query({
     return active;
   },
 });
+
+// Get list of all projects with task counts - for agent onboarding
+export const projects = query({
+  args: {},
+  handler: async (ctx) => {
+    const tasks = await ctx.db.query("tasks").collect();
+
+    const projectStats: Record<string, { total: number; active: number; done: number }> = {};
+
+    for (const task of tasks) {
+      if (!projectStats[task.project]) {
+        projectStats[task.project] = { total: 0, active: 0, done: 0 };
+      }
+      projectStats[task.project].total++;
+      if (task.status === "done") {
+        projectStats[task.project].done++;
+      } else {
+        projectStats[task.project].active++;
+      }
+    }
+
+    return Object.entries(projectStats)
+      .map(([name, stats]) => ({ name, ...stats }))
+      .sort((a, b) => b.active - a.active); // Most active first
+  },
+});

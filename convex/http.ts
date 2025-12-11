@@ -41,16 +41,29 @@ http.route({
     const { op, ...args } = body;
 
     // Helper to resolve task ID from either id or title
-    async function resolveTaskId(): Promise<Id<"tasks"> | null> {
-      if (args.id) return args.id as Id<"tasks">;
+    // Returns { id, matches } - error if ambiguous (multiple matches, no exact)
+    async function resolveTaskId(): Promise<{ id: Id<"tasks"> | null; matches?: any[]; error?: string }> {
+      if (args.id) return { id: args.id as Id<"tasks"> };
       if (args.title) {
         const matches = await ctx.runQuery(api.planner.find, { q: args.title });
-        if (matches.length === 0) return null;
-        // Return first match (exact match preferred)
+        if (matches.length === 0) return { id: null, error: "No task found matching: " + args.title };
+
+        // Exact match (case-insensitive) always wins
         const exact = matches.find((t: any) => t.title.toLowerCase() === args.title.toLowerCase());
-        return (exact || matches[0])._id;
+        if (exact) return { id: exact._id };
+
+        // Multiple partial matches = ambiguous, unless exact: true forces first match
+        if (matches.length > 1 && !args.exact) {
+          return {
+            id: null,
+            matches: matches.map((t: any) => ({ title: t.title, project: t.project, status: t.status })),
+            error: `Ambiguous: "${args.title}" matches ${matches.length} tasks. Use exact title or add exact:true to use first match.`
+          };
+        }
+
+        return { id: matches[0]._id };
       }
-      return null;
+      return { id: null, error: "Need id or title" };
     }
 
     try {
@@ -71,79 +84,88 @@ http.route({
 
         // done <id|title> - mark task done
         case "done": {
-          const taskId = await resolveTaskId();
-          if (!taskId) return json({ error: "Task not found. Provide id or title" }, 400);
-          await ctx.runMutation(api.planner.done, { taskId });
-          const task = await ctx.runQuery(api.planner.get, { taskId });
+          const resolved = await resolveTaskId();
+          if (!resolved.id) return json({ error: resolved.error, matches: resolved.matches }, 400);
+          await ctx.runMutation(api.planner.done, { taskId: resolved.id });
+          const task = await ctx.runQuery(api.planner.get, { taskId: resolved.id });
+          return json({ ok: true, task: cleanTask(task) });
+        }
+
+        // reopen <id|title> - undo done, set back to planned
+        case "reopen": {
+          const resolved = await resolveTaskId();
+          if (!resolved.id) return json({ error: resolved.error, matches: resolved.matches }, 400);
+          await ctx.runMutation(api.planner.status, { taskId: resolved.id, status: "planned" });
+          const task = await ctx.runQuery(api.planner.get, { taskId: resolved.id });
           return json({ ok: true, task: cleanTask(task) });
         }
 
         // start <id|title> - shortcut for status: in_flight
         case "start": {
-          const taskId = await resolveTaskId();
-          if (!taskId) return json({ error: "Task not found. Provide id or title" }, 400);
-          await ctx.runMutation(api.planner.status, { taskId, status: "in_flight" });
-          const task = await ctx.runQuery(api.planner.get, { taskId });
+          const resolved = await resolveTaskId();
+          if (!resolved.id) return json({ error: resolved.error, matches: resolved.matches }, 400);
+          await ctx.runMutation(api.planner.status, { taskId: resolved.id, status: "in_flight" });
+          const task = await ctx.runQuery(api.planner.get, { taskId: resolved.id });
           return json({ ok: true, task: cleanTask(task) });
         }
 
         // block <id|title> [reason] - shortcut for status: blocked
         case "block": {
-          const taskId = await resolveTaskId();
-          if (!taskId) return json({ error: "Task not found. Provide id or title" }, 400);
-          await ctx.runMutation(api.planner.status, { taskId, status: "blocked", reason: args.reason });
-          const task = await ctx.runQuery(api.planner.get, { taskId });
+          const resolved = await resolveTaskId();
+          if (!resolved.id) return json({ error: resolved.error, matches: resolved.matches }, 400);
+          await ctx.runMutation(api.planner.status, { taskId: resolved.id, status: "blocked", reason: args.reason });
+          const task = await ctx.runQuery(api.planner.get, { taskId: resolved.id });
           return json({ ok: true, task: cleanTask(task) });
         }
 
         // unblock <id|title> - shortcut for status: planned (clears blocked)
         case "unblock": {
-          const taskId = await resolveTaskId();
-          if (!taskId) return json({ error: "Task not found. Provide id or title" }, 400);
-          await ctx.runMutation(api.planner.status, { taskId, status: "planned" });
-          const task = await ctx.runQuery(api.planner.get, { taskId });
+          const resolved = await resolveTaskId();
+          if (!resolved.id) return json({ error: resolved.error, matches: resolved.matches }, 400);
+          await ctx.runMutation(api.planner.status, { taskId: resolved.id, status: "planned" });
+          const task = await ctx.runQuery(api.planner.get, { taskId: resolved.id });
           return json({ ok: true, task: cleanTask(task) });
         }
 
         // status <id|title> <status> [reason]
         case "status": {
           if (!args.status) return json({ error: "Need status" }, 400);
-          const taskId = await resolveTaskId();
-          if (!taskId) return json({ error: "Task not found. Provide id or title" }, 400);
+          const resolved = await resolveTaskId();
+          if (!resolved.id) return json({ error: resolved.error, matches: resolved.matches }, 400);
           await ctx.runMutation(api.planner.status, {
-            taskId,
+            taskId: resolved.id,
             status: args.status,
             reason: args.reason,
           });
-          const task = await ctx.runQuery(api.planner.get, { taskId });
+          const task = await ctx.runQuery(api.planner.get, { taskId: resolved.id });
           return json({ ok: true, task: cleanTask(task) });
         }
 
         // note <id|title> <text>
         case "note": {
           if (!args.text) return json({ error: "Need text" }, 400);
-          const taskId = await resolveTaskId();
-          if (!taskId) return json({ error: "Task not found. Provide id or title" }, 400);
-          await ctx.runMutation(api.planner.note, { taskId, text: args.text });
-          const task = await ctx.runQuery(api.planner.get, { taskId });
+          const resolved = await resolveTaskId();
+          if (!resolved.id) return json({ error: resolved.error, matches: resolved.matches }, 400);
+          await ctx.runMutation(api.planner.note, { taskId: resolved.id, text: args.text });
+          const task = await ctx.runQuery(api.planner.get, { taskId: resolved.id });
           return json({ ok: true, task: cleanTask(task) });
         }
 
         // rename <id|title> <newTitle>
         case "rename": {
           if (!args.newTitle) return json({ error: "Need newTitle" }, 400);
-          const taskId = await resolveTaskId();
-          if (!taskId) return json({ error: "Task not found. Provide id or title" }, 400);
-          await ctx.runMutation(api.planner.rename, { taskId, title: args.newTitle });
-          const task = await ctx.runQuery(api.planner.get, { taskId });
+          const resolved = await resolveTaskId();
+          if (!resolved.id) return json({ error: resolved.error, matches: resolved.matches }, 400);
+          await ctx.runMutation(api.planner.rename, { taskId: resolved.id, title: args.newTitle });
+          const task = await ctx.runQuery(api.planner.get, { taskId: resolved.id });
           return json({ ok: true, task: cleanTask(task) });
         }
 
         // delete <id|title>
         case "delete": {
-          const taskId = await resolveTaskId();
-          if (!taskId) return json({ error: "Task not found. Provide id or title" }, 400);
-          await ctx.runMutation(api.planner.deleteTask, { taskId });
+          const resolved = await resolveTaskId();
+          if (!resolved.id) return json({ error: resolved.error, matches: resolved.matches }, 400);
+          await ctx.runMutation(api.planner.deleteTask, { taskId: resolved.id });
           return json({ ok: true });
         }
 
@@ -179,9 +201,9 @@ http.route({
 
         // get <id|title>
         case "get": {
-          const taskId = await resolveTaskId();
-          if (!taskId) return json({ error: "Task not found. Provide id or title" }, 400);
-          const task = await ctx.runQuery(api.planner.get, { taskId });
+          const resolved = await resolveTaskId();
+          if (!resolved.id) return json({ error: resolved.error, matches: resolved.matches }, 400);
+          const task = await ctx.runQuery(api.planner.get, { taskId: resolved.id });
           return json(cleanTask(task) || { error: "Not found" });
         }
 
@@ -227,8 +249,56 @@ http.route({
           return json({ ok: true, results });
         }
 
+        // projects - list all projects with stats (for agent onboarding)
+        case "projects": {
+          const projects = await ctx.runQuery(api.planner.projects, {});
+          return json({ projects });
+        }
+
+        // help - API documentation for agent onboarding
+        case "help": {
+          return json({
+            description: "Daily Shit List - Task management API for agents",
+            onboarding: [
+              "1. Call 'projects' to see existing projects (avoid typos when adding tasks)",
+              "2. Call 'active' to see current non-done tasks",
+              "3. Use exact titles or add exact:true when title is ambiguous",
+            ],
+            operations: {
+              // Queries (read-only)
+              help: "This documentation",
+              projects: "List all projects with task counts",
+              active: "Get all non-done tasks sorted by status",
+              list: "Get all tasks grouped by project",
+              find: { args: "q, [status]", desc: "Search tasks by title substring" },
+              get: { args: "id|title", desc: "Get single task" },
+
+              // Mutations (write)
+              add: { args: "title, project, [note]", desc: "Create new task" },
+              done: { args: "id|title, [exact]", desc: "Mark task completed" },
+              reopen: { args: "id|title", desc: "Undo done, set back to planned" },
+              start: { args: "id|title", desc: "Set status to in_flight" },
+              block: { args: "id|title, [reason]", desc: "Set status to blocked" },
+              unblock: { args: "id|title", desc: "Set status to planned" },
+              status: { args: "id|title, status, [reason]", desc: "Set any status" },
+              note: { args: "id|title, text", desc: "Add note to task" },
+              rename: { args: "id|title, newTitle", desc: "Rename task" },
+              delete: { args: "id|title", desc: "Delete task" },
+              purge: { args: "none", desc: "Delete all done tasks" },
+              batch: { args: "ops[]", desc: "Execute multiple operations" },
+            },
+            statuses: ["planned", "in_flight", "blocked", "done"],
+            tips: [
+              "Use title-based lookup: {op:'done', title:'MCP server'}",
+              "Partial titles work but must be unambiguous",
+              "Add exact:true to force first match if ambiguous",
+              "Response always includes updated task for verification",
+            ],
+          });
+        }
+
         default:
-          return json({ error: `Unknown op: ${op}. Valid: add, done, start, block, unblock, status, note, rename, delete, purge, find, active, list, get, batch` }, 400);
+          return json({ error: `Unknown op: ${op}. Valid: help, projects, active, list, find, get, add, done, reopen, start, block, unblock, status, note, rename, delete, purge, batch` }, 400);
       }
     } catch (err) {
       return json({ error: err instanceof Error ? err.message : "Error" }, 500);
