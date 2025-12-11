@@ -1,0 +1,32 @@
+{
+  "observability": {
+    "server_url": "http://localhost:3001",
+    "enabled": true,
+    "auto_start": false
+  },
+  "hooks": {
+    "enabled": true,
+    "python_path": "python3",
+    "uv_path": "uv",
+    "timeout": 30
+  },
+  "agents": {
+    "max_concurrent": 10,
+    "timeout": 300,
+    "retry_attempts": 3
+  },
+  "communication": {
+    "message_retention_hours": 24,
+    "broadcast_enabled": true
+  },
+  "development": {
+    "verbose_logging": false,
+    "debug_mode": false
+  },
+  "installation": {
+    "date": "2025-12-11T06:02:40.450Z",
+    "version": "main",
+    "installer_version": "1.0.0",
+    "installed_via": "npx-installer"
+  }
+}

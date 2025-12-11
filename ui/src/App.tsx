@@ -131,12 +131,18 @@ function App() {
   }
 
   if (loading) {
-    return <div className="container">Loading...</div>
+    return (
+      <div className="container">
+        <h1 style={{ color: 'white' }}>Daily Shit List</h1>
+        <p style={{ color: 'white' }}>Loading...</p>
+      </div>
+    )
   }
 
   if (error) {
     return (
       <div className="container">
+        <h1 style={{ color: 'white' }}>Daily Shit List</h1>
         <div className="error">{error}</div>
         <button onClick={fetchState}>Retry</button>
       </div>
