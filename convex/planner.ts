@@ -198,3 +198,38 @@ export const get = query({
     return await ctx.db.get(args.taskId);
   },
 });
+
+// Find tasks by title substring (case-insensitive)
+export const find = query({
+  args: { q: v.string(), status: v.optional(v.string()) },
+  handler: async (ctx, args) => {
+    const allTasks = await ctx.db.query("tasks").collect();
+    const query = args.q.toLowerCase();
+
+    return allTasks.filter(t => {
+      const matchesTitle = t.title.toLowerCase().includes(query);
+      const matchesStatus = !args.status || t.status === args.status;
+      return matchesTitle && matchesStatus;
+    });
+  },
+});
+
+// Get active tasks (not done) - most common query for agents
+export const active = query({
+  args: {},
+  handler: async (ctx) => {
+    const tasks = await ctx.db.query("tasks").collect();
+    const active = tasks.filter(t => t.status !== "done");
+
+    // Sort: in_flight first, then blocked, then planned
+    const statusOrder: Record<string, number> = { in_flight: 0, blocked: 1, planned: 2 };
+    active.sort((a, b) => {
+      const orderA = statusOrder[a.status] ?? 99;
+      const orderB = statusOrder[b.status] ?? 99;
+      if (orderA !== orderB) return orderA - orderB;
+      return a.createdAt.localeCompare(b.createdAt);
+    });
+
+    return active;
+  },
+});
