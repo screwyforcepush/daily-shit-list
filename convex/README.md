@@ -1,90 +1,83 @@
-# Welcome to your Convex functions directory!
+# Convex Backend
 
-Write your Convex functions here.
-See https://docs.convex.dev/functions for more.
+## Overview
 
-A query function that takes two arguments looks like:
+This is the Convex backend for the Daily Shit List. It provides:
+- Real-time task storage with WebSocket subscriptions
+- HTTP API for agent interactions
+- Queries and mutations for task management
 
-```ts
-// convex/myFunctions.ts
-import { query } from "./_generated/server";
-import { v } from "convex/values";
+## Files
 
-export const myQueryFunction = query({
-  // Validators for arguments.
-  args: {
-    first: v.number(),
-    second: v.string(),
-  },
+- **schema.ts** - Database schema (tasks table with indexes)
+- **planner.ts** - Core queries and mutations (add, done, status, note, delete, etc.)
+- **http.ts** - HTTP API handler that wraps planner functions for agent use
 
-  // Function implementation.
-  handler: async (ctx, args) => {
-    // Read the database as many times as you need here.
-    // See https://docs.convex.dev/database/reading-data.
-    const documents = await ctx.db.query("tablename").collect();
+## Key Concepts
 
-    // Arguments passed from the client are properties of the args object.
-    console.log(args.first, args.second);
-
-    // Write arbitrary JavaScript here: filter, aggregate, build derived data,
-    // remove non-public properties, or create new objects.
-    return documents;
-  },
-});
-```
-
-Using this query function in a React component looks like:
-
-```ts
-const data = useQuery(api.myFunctions.myQueryFunction, {
-  first: 10,
-  second: "hello",
-});
-```
-
-A mutation function looks like:
-
-```ts
-// convex/myFunctions.ts
-import { mutation } from "./_generated/server";
-import { v } from "convex/values";
-
-export const myMutationFunction = mutation({
-  // Validators for arguments.
-  args: {
-    first: v.string(),
-    second: v.string(),
-  },
-
-  // Function implementation.
-  handler: async (ctx, args) => {
-    // Insert or modify documents in the database here.
-    // Mutations can also read from the database like queries.
-    // See https://docs.convex.dev/database/writing-data.
-    const message = { body: args.first, author: args.second };
-    const id = await ctx.db.insert("messages", message);
-
-    // Optionally, return a value from your mutation.
-    return await ctx.db.get("messages", id);
-  },
-});
-```
-
-Using this mutation function in a React component looks like:
-
-```ts
-const mutation = useMutation(api.myFunctions.myMutationFunction);
-function handleButtonPress() {
-  // fire and forget, the most common way to use mutations
-  mutation({ first: "Hello!", second: "me" });
-  // OR
-  // use the result once the mutation has completed
-  mutation({ first: "Hello!", second: "me" }).then((result) =>
-    console.log(result),
-  );
+### Task Schema
+```typescript
+{
+  title: string,
+  project: string,
+  status: "planned" | "in_flight" | "blocked" | "done",
+  blockedReason?: string,
+  notes: [{ t: timestamp, text: string }],
+  createdAt: string,
+  updatedAt: string,
+  completedAt?: string
 }
 ```
 
-Use the Convex CLI to push your functions to a deployment. See everything
-the Convex CLI can do by running `npx convex -h` in your project root
-directory. To learn more, launch the docs with `npx convex docs`.
+### Indexes
+- `by_status` - Filter by status
+- `by_project` - Filter by project
+- `by_project_status` - Composite filter
+
+## HTTP API
+
+Endpoint: `POST https://tremendous-labrador-731.convex.site/api`
+
+All operations use JSON body with `op` field. See TOOLGUIDE.md in repo root for full reference.
+
+### Adding Operations
+
+1. Add mutation/query to `planner.ts`
+2. Add HTTP handler case in `http.ts`
+3. Update TOOLGUIDE.md
+
+Example mutation in planner.ts:
+```typescript
+export const myMutation = mutation({
+  args: { taskId: v.id("tasks"), ... },
+  handler: async (ctx, args) => {
+    // ctx.db for database operations
+    return { ok: true };
+  },
+});
+```
+
+Example HTTP handler in http.ts:
+```typescript
+case "myop": {
+  const result = await ctx.runMutation(api.planner.myMutation, { ... });
+  return json(result);
+}
+```
+
+## Development
+
+```bash
+# Start dev server (watches for changes)
+npx convex dev
+
+# Deploy once
+npx convex dev --once
+
+# View dashboard
+npx convex dashboard
+```
+
+## Real-time
+
+The UI subscribes to `api.planner.list` via WebSocket. Any mutation that changes tasks will automatically push updates to connected clients.

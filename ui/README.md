@@ -1,73 +1,75 @@
-# React + TypeScript + Vite
+# Daily Shit List - UI
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+## Overview
 
-Currently, two official plugins are available:
+Read-only visualization dashboard for the Daily Shit List. This UI is for humans to see task state - all data manipulation happens via the API (used by agents).
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Babel](https://babeljs.io/) (or [oxc](https://oxc.rs) when used in [rolldown-vite](https://vite.dev/guide/rolldown)) for Fast Refresh
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/) for Fast Refresh
+## Tech Stack
 
-## React Compiler
+- React 19 + TypeScript
+- Vite 7
+- Tailwind CSS 4
+- Convex React client (WebSocket subscriptions)
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
+## Architecture
 
-## Expanding the ESLint configuration
-
-If you are developing a production application, we recommend updating the configuration to enable type-aware lint rules:
-
-```js
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
-
-      // Remove tseslint.configs.recommended and replace with this
-      tseslint.configs.recommendedTypeChecked,
-      // Alternatively, use this for stricter rules
-      tseslint.configs.strictTypeChecked,
-      // Optionally, add this for stylistic rules
-      tseslint.configs.stylisticTypeChecked,
-
-      // Other configs...
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
+```
+App.tsx
+├── ConvexProvider (WebSocket connection)
+└── Dashboard
+    ├── Header (stats: in_flight, blocked, planned, done)
+    ├── Project sections (collapsible)
+    │   ├── Progress bar
+    │   └── Task list (expandable notes)
+    └── Completed section (collapsed by default)
 ```
 
-You can also install [eslint-plugin-react-x](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-x) and [eslint-plugin-react-dom](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-dom) for React-specific lint rules:
+## Key Design Decisions
 
-```js
-// eslint.config.js
-import reactX from 'eslint-plugin-react-x'
-import reactDom from 'eslint-plugin-react-dom'
+1. **Read-only** - No buttons/forms for data manipulation. All changes via API.
+2. **Real-time** - Uses Convex `useQuery` for WebSocket subscriptions. Updates push automatically.
+3. **Live indicator** - Pulsing green dot shows WebSocket is connected.
+4. **Expandable notes** - Click "+ N notes" to see full note content.
+5. **Project grouping** - Tasks grouped by project, sorted by status (in_flight first).
 
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
-      // Enable lint rules for React
-      reactX.configs['recommended-typescript'],
-      // Enable lint rules for React DOM
-      reactDom.configs.recommended,
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
+## Files
+
+- **src/App.tsx** - Single component with all UI logic
+- **src/App.css** - Tailwind imports
+- **vite.config.ts** - Dev server config + path alias for Convex types
+
+## Development
+
+```bash
+# Install deps
+npm install
+
+# Start dev server (port 5175)
+npm run dev
+
+# Build for production
+npm run build
 ```
+
+## Convex Connection
+
+The UI connects to Convex cloud:
+```typescript
+const convex = new ConvexReactClient('https://tremendous-labrador-731.convex.cloud')
+```
+
+It subscribes to `api.planner.list` which returns all tasks grouped by project with stats.
+
+## Styling
+
+Uses Tailwind with a dark theme:
+- Background: `neutral-950`
+- Cards: `neutral-900/50` with `neutral-800` borders
+- Status colors: blue (in_flight), rose (blocked), neutral (planned), emerald (done)
+
+## Making Changes
+
+1. Edit `src/App.tsx`
+2. Dev server hot-reloads
+3. Build and commit when done
+4. UI is served from wherever you deploy the static build
