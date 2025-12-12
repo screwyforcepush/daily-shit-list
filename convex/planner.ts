@@ -152,12 +152,97 @@ export const purge = mutation({
   },
 });
 
+// Delete multiple tasks matching search query
+// Supports single string or array of strings (OR matching)
+export const deleteMany = mutation({
+  args: {
+    q: v.union(v.string(), v.array(v.string())),
+    status: v.optional(v.string()),
+  },
+  handler: async (ctx, args) => {
+    const allTasks = await ctx.db.query("tasks").collect();
+
+    // Normalize query to array of lowercase terms
+    const queries = Array.isArray(args.q)
+      ? args.q.map(term => term.toLowerCase())
+      : [args.q.toLowerCase()];
+
+    const matchingTasks = allTasks.filter(t => {
+      const titleLower = t.title.toLowerCase();
+      // Match if ANY term matches (OR logic)
+      const matchesTitle = queries.some(query => titleLower.includes(query));
+      const matchesStatus = !args.status || t.status === args.status;
+      return matchesTitle && matchesStatus;
+    });
+
+    const deleted: Array<{ id: string; title: string }> = [];
+    for (const task of matchingTasks) {
+      await ctx.db.delete(task._id);
+      deleted.push({ id: task._id, title: task.title });
+    }
+
+    return { ok: true, deleted, count: deleted.length };
+  },
+});
+
+// Activate a task: unblock if blocked, then set to in_flight
+export const activate = mutation({
+  args: { taskId: v.id("tasks") },
+  handler: async (ctx, args) => {
+    const task = await ctx.db.get(args.taskId);
+    if (!task) return { ok: false, error: "Task not found" };
+
+    const timestamp = now();
+    await ctx.db.patch(args.taskId, {
+      status: "in_flight",
+      updatedAt: timestamp,
+      blockedReason: undefined,
+      completedAt: undefined,
+    });
+    return { ok: true, previousStatus: task.status };
+  },
+});
+
 // ============ QUERIES ============
 
 export const list = query({
-  args: {},
-  handler: async (ctx) => {
-    const tasks = await ctx.db.query("tasks").collect();
+  args: {
+    project: v.optional(v.string()),
+    status: v.optional(v.union(
+      v.literal("planned"),
+      v.literal("in_flight"),
+      v.literal("blocked"),
+      v.literal("done")
+    )),
+  },
+  handler: async (ctx, args) => {
+    let tasks;
+
+    // Use optimal index based on filter combination
+    if (args.project && args.status) {
+      // Both filters: use composite index
+      tasks = await ctx.db
+        .query("tasks")
+        .withIndex("by_project_status", (q) =>
+          q.eq("project", args.project!).eq("status", args.status!)
+        )
+        .collect();
+    } else if (args.project) {
+      // Project filter only
+      tasks = await ctx.db
+        .query("tasks")
+        .withIndex("by_project", (q) => q.eq("project", args.project!))
+        .collect();
+    } else if (args.status) {
+      // Status filter only
+      tasks = await ctx.db
+        .query("tasks")
+        .withIndex("by_status", (q) => q.eq("status", args.status!))
+        .collect();
+    } else {
+      // No filters
+      tasks = await ctx.db.query("tasks").collect();
+    }
 
     // Group by project
     const byProject: Record<string, typeof tasks> = {};
@@ -200,14 +285,24 @@ export const get = query({
 });
 
 // Find tasks by title substring (case-insensitive)
+// Supports single string or array of strings (OR matching)
 export const find = query({
-  args: { q: v.string(), status: v.optional(v.string()) },
+  args: {
+    q: v.union(v.string(), v.array(v.string())),
+    status: v.optional(v.string())
+  },
   handler: async (ctx, args) => {
     const allTasks = await ctx.db.query("tasks").collect();
-    const query = args.q.toLowerCase();
+
+    // Normalize query to array of lowercase terms
+    const queries = Array.isArray(args.q)
+      ? args.q.map(term => term.toLowerCase())
+      : [args.q.toLowerCase()];
 
     return allTasks.filter(t => {
-      const matchesTitle = t.title.toLowerCase().includes(query);
+      const titleLower = t.title.toLowerCase();
+      // Match if ANY term matches (OR logic)
+      const matchesTitle = queries.some(query => titleLower.includes(query));
       const matchesStatus = !args.status || t.status === args.status;
       return matchesTitle && matchesStatus;
     });
@@ -257,5 +352,213 @@ export const projects = query({
     return Object.entries(projectStats)
       .map(([name, stats]) => ({ name, ...stats }))
       .sort((a, b) => b.active - a.active); // Most active first
+  },
+});
+
+// Find existing project by name (case-insensitive match)
+// Returns the canonical project name if found, or suggestions if fuzzy match
+export const findProjectByName = query({
+  args: { name: v.string() },
+  handler: async (ctx, args) => {
+    const tasks = await ctx.db.query("tasks").collect();
+
+    // Get unique project names
+    const projectNames = [...new Set(tasks.map(t => t.project))];
+    const inputLower = args.name.toLowerCase();
+
+    // Look for exact case-insensitive match
+    const exactMatch = projectNames.find(p => p.toLowerCase() === inputLower);
+    if (exactMatch) {
+      return { match: exactMatch, suggestions: [] };
+    }
+
+    // Look for fuzzy matches (starts with, contains)
+    const suggestions = projectNames.filter(p => {
+      const pLower = p.toLowerCase();
+      // Starts with input
+      if (pLower.startsWith(inputLower)) return true;
+      // Input starts with project name
+      if (inputLower.startsWith(pLower)) return true;
+      // Contains input
+      if (pLower.includes(inputLower)) return true;
+      // Levenshtein-like: check if input is a substring with small edits
+      // Simple heuristic: check word overlap
+      const inputWords = inputLower.split(/\s+/);
+      const pWords = pLower.split(/\s+/);
+      const hasOverlap = inputWords.some(w => pWords.some(pw => pw.includes(w) || w.includes(pw)));
+      return hasOverlap;
+    });
+
+    return { match: null, suggestions: suggestions.slice(0, 5) };
+  },
+});
+
+// ============ EXPORT/IMPORT ============
+
+// Export all tasks for backup
+export const exportTasks = query({
+  args: {},
+  handler: async (ctx) => {
+    const tasks = await ctx.db.query("tasks").collect();
+
+    // Transform tasks to export format (exclude internal _id, _creationTime)
+    const exportedTasks = tasks.map(task => ({
+      title: task.title,
+      project: task.project,
+      status: task.status,
+      blockedReason: task.blockedReason,
+      notes: task.notes,
+      createdAt: task.createdAt,
+      updatedAt: task.updatedAt,
+      completedAt: task.completedAt,
+    }));
+
+    return {
+      version: "1.0",
+      exportedAt: now(),
+      taskCount: tasks.length,
+      tasks: exportedTasks,
+    };
+  },
+});
+
+// Import tasks from backup (supports replace, merge, append modes)
+export const importTasks = mutation({
+  args: {
+    data: v.object({
+      version: v.string(),
+      exportedAt: v.string(),
+      taskCount: v.number(),
+      tasks: v.array(v.object({
+        title: v.string(),
+        project: v.string(),
+        status: v.union(
+          v.literal("planned"),
+          v.literal("in_flight"),
+          v.literal("blocked"),
+          v.literal("done")
+        ),
+        blockedReason: v.optional(v.string()),
+        notes: v.array(v.object({
+          t: v.string(),
+          text: v.string(),
+        })),
+        createdAt: v.string(),
+        updatedAt: v.string(),
+        completedAt: v.optional(v.string()),
+      })),
+    }),
+    mode: v.union(
+      v.literal("replace"),  // Delete all existing, import new
+      v.literal("merge"),    // Update existing by title+project, add new
+      v.literal("append")    // Add all as new tasks (even if duplicates)
+    ),
+  },
+  handler: async (ctx, args) => {
+    const { data, mode } = args;
+    const timestamp = now();
+
+    let deleted = 0;
+    let created = 0;
+    let updated = 0;
+    let skipped = 0;
+
+    if (mode === "replace") {
+      // Delete all existing tasks
+      const existingTasks = await ctx.db.query("tasks").collect();
+      for (const task of existingTasks) {
+        await ctx.db.delete(task._id);
+        deleted++;
+      }
+
+      // Insert all imported tasks
+      for (const task of data.tasks) {
+        await ctx.db.insert("tasks", {
+          title: task.title,
+          project: task.project,
+          status: task.status,
+          blockedReason: task.blockedReason,
+          notes: task.notes,
+          createdAt: task.createdAt,
+          updatedAt: timestamp,
+          completedAt: task.completedAt,
+        });
+        created++;
+      }
+    } else if (mode === "merge") {
+      // Get existing tasks for matching
+      const existingTasks = await ctx.db.query("tasks").collect();
+      const existingByKey = new Map<string, typeof existingTasks[0]>();
+      for (const task of existingTasks) {
+        const key = `${task.project.toLowerCase()}:${task.title.toLowerCase()}`;
+        existingByKey.set(key, task);
+      }
+
+      for (const task of data.tasks) {
+        const key = `${task.project.toLowerCase()}:${task.title.toLowerCase()}`;
+        const existing = existingByKey.get(key);
+
+        if (existing) {
+          // Update existing task (merge notes, use imported status if different)
+          const mergedNotes = [...existing.notes];
+          for (const note of task.notes) {
+            // Only add notes that don't exist (by timestamp+text)
+            const exists = mergedNotes.some(n => n.t === note.t && n.text === note.text);
+            if (!exists) {
+              mergedNotes.push(note);
+            }
+          }
+          // Sort notes by timestamp
+          mergedNotes.sort((a, b) => a.t.localeCompare(b.t));
+
+          await ctx.db.patch(existing._id, {
+            status: task.status,
+            blockedReason: task.blockedReason,
+            notes: mergedNotes,
+            updatedAt: timestamp,
+            completedAt: task.completedAt,
+          });
+          updated++;
+        } else {
+          // Create new task
+          await ctx.db.insert("tasks", {
+            title: task.title,
+            project: task.project,
+            status: task.status,
+            blockedReason: task.blockedReason,
+            notes: task.notes,
+            createdAt: task.createdAt,
+            updatedAt: timestamp,
+            completedAt: task.completedAt,
+          });
+          created++;
+        }
+      }
+    } else if (mode === "append") {
+      // Simply add all tasks (may create duplicates)
+      for (const task of data.tasks) {
+        await ctx.db.insert("tasks", {
+          title: task.title,
+          project: task.project,
+          status: task.status,
+          blockedReason: task.blockedReason,
+          notes: task.notes,
+          createdAt: task.createdAt,
+          updatedAt: timestamp,
+          completedAt: task.completedAt,
+        });
+        created++;
+      }
+    }
+
+    return {
+      ok: true,
+      mode,
+      deleted,
+      created,
+      updated,
+      skipped,
+      importedFrom: data.exportedAt,
+    };
   },
 });

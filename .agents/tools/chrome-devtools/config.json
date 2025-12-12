@@ -4,7 +4,8 @@
     "-y",
     "chrome-devtools-mcp@latest",
     "--isolated",
-    "--headless=true"
+    "--headless",
+    "--executablePath=/usr/local/bin/chromium-mcp"
   ],
   "_comment": "Default config runs headless. Override by creating ~/.browsertools/config.json",
   "_examples": {
@@ -15,8 +16,8 @@
       "mcp_args": [
         "-y",
         "chrome-devtools-mcp@latest",
-        "--isolated=true",
-        "--headless=true",
+        "--isolated",
+        "--headless",
         "--executablePath=/usr/local/bin/chromium-mcp"
       ]
     }
