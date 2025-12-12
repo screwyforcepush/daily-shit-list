@@ -34,6 +34,14 @@ function Dashboard() {
   const data = useQuery(api.planner.list, {}) as ListResponse | undefined
   const [showCompleted, setShowCompleted] = useState(false)
   const [collapsedProjects, setCollapsedProjects] = useState<Record<string, boolean>>({})
+  const [expandedTasks, setExpandedTasks] = useState<Record<string, boolean>>({})
+
+  const toggleTaskExpand = (taskId: string) => {
+    setExpandedTasks(prev => ({
+      ...prev,
+      [taskId]: !prev[taskId]
+    }))
+  }
 
   const toggleProjectCollapse = (project: string) => {
     setCollapsedProjects(prev => ({
@@ -137,35 +145,62 @@ function Dashboard() {
 
               {!isCollapsed && (
               <ul className="space-y-1">
-                {active.map(task => (
-                  <li
-                    key={task._id}
-                    className={`rounded-lg px-3 py-2 ${
-                      task.status === 'in_flight'
-                        ? 'bg-blue-950/50 border border-blue-800/50'
-                        : task.status === 'blocked'
-                        ? 'bg-rose-950/30 border border-rose-900/30'
-                        : 'bg-neutral-900/50'
-                    }`}
-                  >
-                    <div className="flex items-start gap-3">
-                      <span className={`mt-1 h-2 w-2 rounded-full flex-shrink-0 ${statusDot[task.status]}`} />
-                      <div className="flex-1 min-w-0">
-                        <div className={`text-sm ${task.status === 'in_flight' ? 'text-blue-100 font-medium' : ''}`}>
-                          {task.title}
-                        </div>
-                        {task.blockedReason && (
-                          <div className="text-xs text-rose-400 mt-0.5">! {task.blockedReason}</div>
-                        )}
-                        {task.notes.length > 0 && (
-                          <div className="text-xs text-neutral-500 mt-0.5 truncate">
-                            {task.notes[task.notes.length - 1].text}
+                {active.map(task => {
+                  const isExpanded = expandedTasks[task._id] ?? false
+                  const hasNotes = task.notes.length > 0
+                  const latestNote = hasNotes ? task.notes[task.notes.length - 1].text : ''
+                  const isLongNote = latestNote.length > 100 || latestNote.includes('\n')
+
+                  return (
+                    <li
+                      key={task._id}
+                      className={`rounded-lg px-3 py-2 ${
+                        task.status === 'in_flight'
+                          ? 'bg-blue-950/50 border border-blue-800/50'
+                          : task.status === 'blocked'
+                          ? 'bg-rose-950/30 border border-rose-900/30'
+                          : 'bg-neutral-900/50'
+                      }`}
+                    >
+                      <div className="flex items-start gap-3">
+                        <span className={`mt-1 h-2 w-2 rounded-full flex-shrink-0 ${statusDot[task.status]}`} />
+                        <div className="flex-1 min-w-0">
+                          <div className={`text-sm ${task.status === 'in_flight' ? 'text-blue-100 font-medium' : ''}`}>
+                            {task.title}
                           </div>
-                        )}
+                          {task.blockedReason && (
+                            <div className="text-xs text-rose-400 mt-0.5">! {task.blockedReason}</div>
+                          )}
+                          {hasNotes && (
+                            <div className="mt-1">
+                              {isExpanded ? (
+                                <div className="space-y-1">
+                                  {task.notes.map((note, i) => (
+                                    <div key={i} className="text-xs text-neutral-400 whitespace-pre-wrap border-l-2 border-neutral-700 pl-2">
+                                      {note.text}
+                                    </div>
+                                  ))}
+                                </div>
+                              ) : (
+                                <div className="text-xs text-neutral-500 truncate">
+                                  {latestNote.split('\n')[0]}
+                                </div>
+                              )}
+                              {(isLongNote || task.notes.length > 1) && (
+                                <button
+                                  onClick={() => toggleTaskExpand(task._id)}
+                                  className="text-xs text-neutral-600 hover:text-neutral-400 mt-1"
+                                >
+                                  {isExpanded ? '- collapse' : `+ ${task.notes.length} note${task.notes.length > 1 ? 's' : ''}`}
+                                </button>
+                              )}
+                            </div>
+                          )}
+                        </div>
                       </div>
-                    </div>
-                  </li>
-                ))}
+                    </li>
+                  )
+                })}
               </ul>
               )}
 
